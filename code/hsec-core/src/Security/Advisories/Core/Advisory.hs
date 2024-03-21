@@ -1,9 +1,10 @@
 {-# LANGUAGE DerivingVia #-}
 
-module Security.Advisories.Definition
+module Security.Advisories.Core.Advisory
   ( Advisory(..)
     -- * Supporting types
   , Affected(..)
+  , CAPEC(..)
   , CWE(..)
   , Architecture(..)
   , AffectedVersionRange(..)
@@ -14,17 +15,20 @@ module Security.Advisories.Definition
 
 import Data.Text (Text)
 import Data.Time (ZonedTime)
+import Distribution.Types.Version (Version)
 import Distribution.Types.VersionRange (VersionRange)
 
 import Text.Pandoc.Definition (Pandoc)
 
-import Security.Advisories.HsecId
+import Security.Advisories.Core.HsecId
+import qualified Security.CVSS as CVSS
 import Security.OSV (Reference)
 
 data Advisory = Advisory
   { advisoryId :: HsecId
   , advisoryModified :: ZonedTime
   , advisoryPublished :: ZonedTime
+  , advisoryCAPECs :: [CAPEC]
   , advisoryCWEs :: [CWE]
   , advisoryKeywords :: [Keyword]
   , advisoryAliases :: [Text]
@@ -44,12 +48,15 @@ data Advisory = Advisory
 -- mention one or more packages.
 data Affected = Affected
   { affectedPackage :: Text
-  , affectedCVSS :: Text -- TODO refine type
+  , affectedCVSS :: CVSS.CVSS
   , affectedVersions :: [AffectedVersionRange]
   , affectedArchitectures :: Maybe [Architecture]
   , affectedOS :: Maybe [OS]
   , affectedDeclarations :: [(Text, VersionRange)]
   }
+  deriving stock (Show)
+
+newtype CAPEC = CAPEC {unCAPEC :: Integer}
   deriving stock (Show)
 
 newtype CWE = CWE {unCWE :: Integer}
@@ -98,7 +105,7 @@ newtype Keyword = Keyword Text
   deriving (Show) via Text
 
 data AffectedVersionRange = AffectedVersionRange
-  { affectedVersionRangeIntroduced :: Text,
-    affectedVersionRangeFixed :: Maybe Text
+  { affectedVersionRangeIntroduced :: Version,
+    affectedVersionRangeFixed :: Maybe Version
   }
   deriving stock (Show)

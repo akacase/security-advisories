@@ -3,40 +3,50 @@
 
 module Main where
 
-import Control.Monad (join, void, when)
+import Control.Monad (forM_, join, void, when)
 import qualified Data.ByteString.Lazy as L
+import Data.Maybe (fromMaybe)
 import Data.Foldable (for_)
 import Data.Functor ((<&>))
 import Data.List (intercalate, isPrefixOf)
-import qualified Data.Text.IO as T
-import Options.Applicative
+import Distribution.Parsec (eitherParsec)
+import Distribution.Types.VersionRange (VersionRange, anyVersion)
 import System.Exit (die, exitFailure, exitSuccess)
-import System.IO (stderr)
+import System.IO (hPrint, hPutStrLn, stderr)
 import System.FilePath (takeBaseName)
+import Validation (Validation(..))
 
 import qualified Data.Aeson
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Options.Applicative
 
 import Security.Advisories
 import qualified Security.Advisories.Convert.OSV as OSV
 import Security.Advisories.Git
+import Security.Advisories.Queries (listVersionRangeAffectedBy)
 import Security.Advisories.Generate.HTML
 
 import qualified Command.Reserve
 
 main :: IO ()
-main = join $ execParser cliOpts
+main = join $
+  customExecParser
+    (prefs showHelpOnEmpty)
+    cliOpts
 
 cliOpts :: ParserInfo (IO ())
 cliOpts = info (commandsParser <**> helper) (fullDesc <> header "Haskell Advisories tools")
   where
     commandsParser :: Parser (IO ())
     commandsParser =
-      subparser
+      hsubparser
         (  command "check" (info commandCheck (progDesc "Syntax check a single advisory"))
         <> command "reserve" (info commandReserve (progDesc "Reserve an HSEC ID"))
         <> command "osv" (info commandOsv (progDesc "Convert a single advisory to OSV"))
         <> command "render" (info commandRender (progDesc "Render a single advisory as HTML"))
         <> command "generate-index" (info commandGenerateIndex (progDesc "Generate an HTML index"))
+        <> command "query" (info commandQuery (progDesc "Run various queries against the database"))
         <> command "help" (info commandHelp (progDesc "Show command help"))
         )
 
@@ -63,13 +73,11 @@ commandReserve =
         ( long "commit"
         <> help "Commit the reservation file"
         )
-  <**> helper
 
 commandCheck :: Parser (IO ())
 commandCheck =
   withAdvisory go
   <$> optional (argument str (metavar "FILE"))
-  <**> helper
   where
     go mPath advisory = do
       for_ mPath $ \path -> do
@@ -82,7 +90,6 @@ commandOsv :: Parser (IO ())
 commandOsv =
   withAdvisory go
   <$> optional (argument str (metavar "FILE"))
-  <**> helper
   where
     go _ adv = do
       L.putStr (Data.Aeson.encode (OSV.convert adv))
@@ -92,7 +99,35 @@ commandRender :: Parser (IO ())
 commandRender =
   withAdvisory (\_ -> T.putStrLn . advisoryHtml)
   <$> optional (argument str (metavar "FILE"))
-  <**> helper
+
+commandQuery :: Parser (IO ())
+commandQuery =
+  subparser
+    ( command "is-affected" (info isAffected (progDesc "Check if a package/version range is marked vulnerable"))
+    )
+  where
+    isAffected :: Parser (IO ())
+    isAffected =
+      go
+        <$> argument str (metavar "PACKAGE")
+        <*> optional (option versionRangeReader (metavar "VERSION-RANGE" <> short 'v' <> long "version-range"))
+        <*> optional (option str (metavar "ADVISORIES-PATH" <> short 'p' <> long "advisories-path"))
+      where go :: T.Text -> Maybe VersionRange -> Maybe FilePath -> IO ()
+            go packageName versionRange advisoriesPath = do
+              let versionRange' = fromMaybe anyVersion versionRange
+              maybeAffectedAdvisories <- listVersionRangeAffectedBy (fromMaybe "." advisoriesPath) packageName versionRange'
+              case maybeAffectedAdvisories of
+                Validation.Failure errors -> do
+                  T.hPutStrLn stderr "Cannot parse some advisories"
+                  forM_ errors $
+                    hPrint stderr
+                  exitFailure
+                Validation.Success [] -> putStrLn "Not affected"
+                Validation.Success affectedAdvisories -> do
+                  hPutStrLn stderr "Affected by:"
+                  forM_ affectedAdvisories $ \advisory ->
+                    T.hPutStrLn stderr $ "* [" <> T.pack (printHsecId $ advisoryId advisory) <> "] " <> advisorySummary advisory
+                  exitFailure
 
 commandGenerateIndex :: Parser (IO ())
 commandGenerateIndex =
@@ -102,7 +137,6 @@ commandGenerateIndex =
   )
   <$> argument str (metavar "SOURCE-DIR")
   <*> argument str (metavar "DESTINATION-DIR")
-  <**> helper
 
 commandHelp :: Parser (IO ())
 commandHelp =
@@ -111,7 +145,9 @@ commandHelp =
       in void $ handleParseResult $ execParserPure defaultPrefs cliOpts args
   )
   <$> optional (argument str (metavar "COMMAND"))
-  <**> helper
+
+versionRangeReader :: ReadM VersionRange
+versionRangeReader = eitherReader eitherParsec
 
 withAdvisory :: (Maybe FilePath -> Advisory -> IO ()) -> Maybe FilePath -> IO ()
 withAdvisory go file = do

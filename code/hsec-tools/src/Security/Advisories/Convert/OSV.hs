@@ -8,6 +8,7 @@ module Security.Advisories.Convert.OSV
 import qualified Data.Text as T
 import Data.Time (zonedTimeToUTC)
 import Data.Void
+import Distribution.Pretty (prettyShow)
 
 import Security.Advisories
 import qualified Security.OSV as OSV
@@ -32,7 +33,7 @@ mkAffected aff =
   OSV.Affected
     { OSV.affectedPackage = mkPackage (affectedPackage aff)
     , OSV.affectedRanges = pure $ mkRange (affectedVersions aff)
-    , OSV.affectedSeverity = mkSeverity (affectedCVSS aff)
+    , OSV.affectedSeverity = [OSV.Severity (affectedCVSS aff)]
     , OSV.affectedEcosystemSpecific = Nothing
     , OSV.affectedDatabaseSpecific = Nothing
     }
@@ -44,18 +45,11 @@ mkPackage name = OSV.Package
   , OSV.packagePurl = Nothing
   }
 
--- NOTE: This is unpleasant.  But we will eventually switch to a
--- proper CVSS type and the unpleasantness will go away.
---
-mkSeverity :: T.Text -> [OSV.Severity]
-mkSeverity s = case T.take 6 s of
-  "CVSS:2" -> [OSV.SeverityCvss2 s]
-  "CVSS:3" -> [OSV.SeverityCvss3 s]
-  _        -> []  -- unexpected; don't include severity
-
 mkRange :: [AffectedVersionRange] -> OSV.Range Void
-mkRange ranges = OSV.RangeEcosystem (foldMap mkEvs ranges) Nothing
+mkRange ranges =
+    OSV.RangeEcosystem (foldMap mkEvs ranges) Nothing
   where
-  mkEvs range =
-    OSV.EventIntroduced (affectedVersionRangeIntroduced range)
-    : maybe [] (pure . OSV.EventFixed) (affectedVersionRangeFixed range)
+    mkEvs :: AffectedVersionRange -> [OSV.Event T.Text]
+    mkEvs range =
+      OSV.EventIntroduced (T.pack $ prettyShow $ affectedVersionRangeIntroduced range)
+      : maybe [] (pure . OSV.EventFixed . T.pack . prettyShow) (affectedVersionRangeFixed range)

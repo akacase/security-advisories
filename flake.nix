@@ -4,33 +4,53 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    toml-parser = {
+      url = "github:glguy/toml-parser/toml-parser-2.0.0.0";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, toml-parser }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ ];
         pkgs =
           import nixpkgs { inherit system overlays; config.allowBroken = true; };
-        project = returnShellEnv:
+        jailbreakUnbreak = pkg:
+          pkgs.haskell.lib.doJailbreak (pkgs.haskell.lib.dontCheck (pkgs.haskell.lib.unmarkBroken pkg));
+
+        cvss = pkgs.haskellPackages.callCabal2nix "cvss" ./code/cvss { };
+        osv = pkgs.haskellPackages.callCabal2nix "osv" ./code/osv { inherit cvss; };
+        hsec-core = pkgs.haskellPackages.callCabal2nix "hsec-core" ./code/hsec-core {
+          inherit cvss osv;
+          Cabal-syntax = pkgs.haskellPackages.Cabal-syntax_3_8_1_0;
+        };
+
+        hsec-tools = returnShellEnv:
           pkgs.haskellPackages.developPackage {
             inherit returnShellEnv;
             name = "hsec-tools";
             root = ./code/hsec-tools;
             withHoogle = false;
-            overrides = self: super: with pkgs.haskell.lib; {
+            overrides = self: super: {
+              inherit cvss hsec-core osv;
               Cabal-syntax = super.Cabal-syntax_3_8_1_0;
+              toml-parser = jailbreakUnbreak (super.callCabal2nix "toml-parser" toml-parser { });
             };
 
             modifier = drv:
-              pkgs.haskell.lib.addBuildTools drv (with pkgs.haskellPackages;
-              [
-                cabal-fmt
-                cabal-install
-                ghcid
-                haskell-language-server
-                pkgs.nixpkgs-fmt
-              ]);
+              if returnShellEnv
+              then
+                pkgs.haskell.lib.addBuildTools drv
+                  (with pkgs.haskellPackages;
+                  [
+                    cabal-fmt
+                    cabal-install
+                    ghcid
+                    haskell-language-server
+                    pkgs.nixpkgs-fmt
+                  ])
+              else drv;
           };
 
         gitconfig =
@@ -44,8 +64,10 @@
           };
       in
       {
-
-        packages.hsec-tools = pkgs.haskell.lib.justStaticExecutables (project false);
+        packages.cvss = cvss;
+        packages.osv = osv;
+        packages.hsec-core = hsec-core;
+        packages.hsec-tools = pkgs.haskell.lib.justStaticExecutables (hsec-tools false);
         packages.hsec-tools-image =
           pkgs.dockerTools.buildImage {
             name = "haskell/hsec-tools";
@@ -81,6 +103,6 @@
         defaultPackage = self.packages.${system}.hsec-tools;
 
         # Used by `nix develop` (dev shell)
-        devShell = project true;
+        devShell = hsec-tools true;
       });
 }
